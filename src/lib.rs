@@ -4,16 +4,19 @@ use std::io::Write;
 
 use dirs;
 
-pub struct LocalFileCache {
+pub struct LocalFileCache<T> {
     dir: PathBuf,
+    to_u8: Box<dyn Fn(&T) -> Vec<u8>>,
+    from_u8: Box<dyn Fn(&[u8]) -> T>,
 }
 
-impl LocalFileCache {
-    pub fn new<P: AsRef<Path>>(sub_path: P) -> Option<Self> {
+impl<T> LocalFileCache<T> {
+    pub fn new<P: AsRef<Path>>(sub_path: P, to_u8: Box<dyn Fn(&T) -> Vec<u8>>, from_u8: Box<dyn Fn(&[u8]) -> T>) -> Option<Self> {
         dirs::cache_dir().map(|mut base_dir| {
             base_dir.push(sub_path);
             Self {
-                dir: base_dir
+                dir: base_dir,
+                to_u8, from_u8,
             }
         })
     }
@@ -30,7 +33,9 @@ impl LocalFileCache {
         }
     }
 
-    pub fn or_insert_with<K, F>(&self, k: K, f: F) -> Result<Vec<u8>, Error> where K: AsRef<Path>, F: FnOnce() -> Vec<u8> {
+    pub fn or_insert_with<K, F>(&self, k: K, f: F) -> Result<T, Error>
+        where K: AsRef<Path>, F: FnOnce() -> T
+    {
         let mut buf = PathBuf::new();
         buf.push(&self.dir);
         fs::create_dir_all(buf.as_path())?;
@@ -43,7 +48,7 @@ impl LocalFileCache {
             Err(e) => match e.kind() {
                 std::io::ErrorKind::NotFound => {
                     let r = f();
-                    Self::save_to(path, &r)?;
+                    Self::save_to(path, &(self.to_u8)(&r))?;
                     return Ok(r);
                 }
                 _ => Err(e),
@@ -51,7 +56,7 @@ impl LocalFileCache {
         }?;
         let mut buffer: Vec<u8> = vec![0; fh.metadata()?.len() as usize];
         fh.read_exact(&mut buffer)?;
-        Ok(buffer)
+        Ok((self.from_u8)(&buffer))
     }
 
     fn save_to(path: &Path, bytes: &[u8]) -> Result<(), Error> {
@@ -67,22 +72,29 @@ mod tests {
 
     #[test]
     fn can_cache() {
-        let cache = LocalFileCache::new("my_test").unwrap();
+        let cache = LocalFileCache::<String>::new("my_test",
+            Box::new(|bin| {
+                vec![bin.parse::<u8>().unwrap()]
+            }),
+            Box::new(|data| {
+                format!("{}", data[0])
+            }),
+        ).unwrap();
         cache.flush().unwrap();
         let mut called = false;
         let ret = cache.or_insert_with("data0", || {
             called = true;
-            vec![123u8]
+            "123".to_owned()
         }).unwrap();
 
-        assert_eq!(ret, vec![123u8]);
+        assert_eq!(ret, "123".to_owned());
         assert!(called);
 
         called = false;
         let ret = cache.or_insert_with("data0", || {
-            vec![234u8]
+            "234".to_owned()
         }).unwrap();
 
-        assert_eq!(ret, vec![123u8]);
+        assert_eq!(ret, "123".to_owned());
     }
 }
