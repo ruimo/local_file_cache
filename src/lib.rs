@@ -1,4 +1,4 @@
-use std::{path::{Path, PathBuf}, fs::{File, self}, io::{Error, self}};
+use std::{path::{Path, PathBuf}, fs::{File, self, OpenOptions}, io::{Error, self}};
 use std::io::Read;
 use std::io::Write;
 
@@ -70,8 +70,23 @@ impl<T> LocalFileCache<T> {
     }
 
     fn save_to(path: &Path, bytes: &[u8]) -> Result<(), Error> {
-        let mut f = File::create(path)?;
+        // More than one program may save the same cache entry simultaneously.
+        // 1) Save file named "xxx.save" with create_new(true). It will be failed if the file with the same name already exists.
+        // 2) If the same named file already exists, just skip this method.
+        // 3) Otherwise, rename "xxx.save" to "xxx".
+
+        let mut save_path = PathBuf::new();
+        save_path.push(path);
+        save_path.set_extension("save");
+
+        let mut f = match OpenOptions::new().write(true).create_new(true).open(&save_path) {
+            Ok(file) => Ok(file),
+            Err(e) => if e.kind() == std::io::ErrorKind::AlreadyExists {
+                return Ok(());
+            } else { Err(e) }
+        }?;
         f.write_all(bytes)?;
+        fs::rename(&save_path, path)?;
         Ok(())
     }
 }
@@ -79,32 +94,73 @@ impl<T> LocalFileCache<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
+    use rand;
 
     #[test]
     fn can_cache() {
-        let cache = LocalFileCache::<String>::new("my_test",
-            Box::new(|bin| {
-                Some(vec![bin.parse::<u8>().unwrap()])
-            }),
-            Box::new(|data| {
-                format!("{}", data[0])
-            }),
-        ).unwrap();
-        cache.flush().unwrap();
-        let mut called = false;
-        let ret = cache.or_insert_with("data0", || {
-            called = true;
-            "123".to_owned()
-        }).unwrap();
+        let rand: u128 = rand::random();
+        let path = format!("local_file_cache_test-{}", rand);
 
-        assert_eq!(ret, "123".to_owned());
-        assert!(called);
+        let test_result = std::panic::catch_unwind(|| {
+            let cache = LocalFileCache::<String>::new(&path,
+                Box::new(|bin| {
+                    Some(vec![bin.parse::<u8>().unwrap()])
+                }),
+                Box::new(|data| {
+                    format!("{}", data[0])
+                }),
+            ).unwrap();
+            cache.flush().unwrap();
+            let mut called = false;
+            let ret = cache.or_insert_with("data0", || {
+                called = true;
+                "123".to_owned()
+            }).unwrap();
+            
+            assert_eq!(ret, "123".to_owned());
+            assert!(called);
+            
+            called = false;
+            let ret = cache.or_insert_with("data0", || {
+                "234".to_owned()
+            }).unwrap();
+            
+            assert_eq!(ret, "123".to_owned());
+        });
 
-        called = false;
-        let ret = cache.or_insert_with("data0", || {
-            "234".to_owned()
-        }).unwrap();
+        LocalFileCache::<()>::invalidate(&path);
 
-        assert_eq!(ret, "123".to_owned());
+        if let Err(e) = test_result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    fn read_all_bytes<P: AsRef<Path>>(path: P) -> Vec<u8> {
+        let mut f = File::open(path).unwrap();
+        let len = f.metadata().unwrap().len();
+        let mut buf = vec![0; len as usize];
+        f.read_exact(&mut buf).unwrap();
+        buf
+    }
+
+    #[test]
+    fn save_to_skips_if_same_name_exists() {
+        let dir = tempdir().unwrap();
+        let mut path = dir.path().to_owned();
+        path.push("test");
+
+        let mut save_path = dir.path().to_owned();
+        save_path.push("test.save");
+
+        LocalFileCache::<()>::save_to(&path, &[12u8]).unwrap();
+        assert_eq!(read_all_bytes(&path), vec![12u8]);
+
+        LocalFileCache::<()>::save_to(&path, &[23u8]).unwrap();
+        assert_eq!(read_all_bytes(&path), vec![23u8]);
+
+        LocalFileCache::<()>::save_to(&save_path, &[123u8]).unwrap();
+        LocalFileCache::<()>::save_to(&path, &[34u8]).unwrap();
+        assert_eq!(read_all_bytes(&path), vec![23u8]);
     }
 }
