@@ -21,6 +21,13 @@ impl<T> LocalFileCache<T> {
         })
     }
 
+    pub fn invalidate<P: AsRef<Path>>(sub_path: P) {
+        dirs::cache_dir().map(|mut base_dir| {
+            base_dir.push(sub_path);
+            fs::remove_dir_all(&base_dir).unwrap();
+        });
+    }
+
     pub fn flush(&self) -> Result<(), Error> {
         match fs::remove_dir_all(&self.dir) {
             Ok(_) => {
