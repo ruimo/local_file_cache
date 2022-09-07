@@ -1,4 +1,4 @@
-use std::{path::{Path, PathBuf}, fs::{File, self}, io::Error};
+use std::{path::{Path, PathBuf}, fs::{File, self}, io::{Error, self}};
 use std::io::Read;
 use std::io::Write;
 
@@ -21,11 +21,11 @@ impl<T> LocalFileCache<T> {
         })
     }
 
-    pub fn invalidate<P: AsRef<Path>>(sub_path: P) {
+    pub fn invalidate<P: AsRef<Path>>(sub_path: P) -> Option<io::Result<()>> {
         dirs::cache_dir().map(|mut base_dir| {
             base_dir.push(sub_path);
-            fs::remove_dir_all(&base_dir).unwrap();
-        });
+            fs::remove_dir_all(&base_dir)
+        })
     }
 
     pub fn flush(&self) -> Result<(), Error> {
