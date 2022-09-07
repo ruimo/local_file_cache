@@ -6,12 +6,12 @@ use dirs;
 
 pub struct LocalFileCache<T> {
     dir: PathBuf,
-    to_u8: Box<dyn Fn(&T) -> Vec<u8>>,
+    to_u8: Box<dyn Fn(&T) -> Option<Vec<u8>>>,
     from_u8: Box<dyn Fn(&[u8]) -> T>,
 }
 
 impl<T> LocalFileCache<T> {
-    pub fn new<P: AsRef<Path>>(sub_path: P, to_u8: Box<dyn Fn(&T) -> Vec<u8>>, from_u8: Box<dyn Fn(&[u8]) -> T>) -> Option<Self> {
+    pub fn new<P: AsRef<Path>>(sub_path: P, to_u8: Box<dyn Fn(&T) -> Option<Vec<u8>>>, from_u8: Box<dyn Fn(&[u8]) -> T>) -> Option<Self> {
         dirs::cache_dir().map(|mut base_dir| {
             base_dir.push(sub_path);
             Self {
@@ -48,7 +48,10 @@ impl<T> LocalFileCache<T> {
             Err(e) => match e.kind() {
                 std::io::ErrorKind::NotFound => {
                     let r = f();
-                    Self::save_to(path, &(self.to_u8)(&r))?;
+                    if let Some(bin) = (self.to_u8)(&r) {
+                        Self::save_to(path, &bin)?;
+                    }
+
                     return Ok(r);
                 }
                 _ => Err(e),
@@ -74,7 +77,7 @@ mod tests {
     fn can_cache() {
         let cache = LocalFileCache::<String>::new("my_test",
             Box::new(|bin| {
-                vec![bin.parse::<u8>().unwrap()]
+                Some(vec![bin.parse::<u8>().unwrap()])
             }),
             Box::new(|data| {
                 format!("{}", data[0])
